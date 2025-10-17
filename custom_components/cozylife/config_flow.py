@@ -19,6 +19,8 @@ from .discovery import discover_devices
 
 DEFAULT_START_IP = "192.168.0.0"
 DEFAULT_END_IP = "192.168.0.255"
+MAX_AUTO_SCAN_PREFIX = 24
+MAX_AUTO_SCAN_ADDRESSES = 2 ** (32 - MAX_AUTO_SCAN_PREFIX)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -99,6 +101,20 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     continue
 
                 network_details = interface.network
+
+                if network_details.num_addresses > MAX_AUTO_SCAN_ADDRESSES:
+                    bounded_network = ipaddress.IPv4Network(
+                        f"{interface.ip}/{MAX_AUTO_SCAN_PREFIX}",
+                        strict=False,
+                    )
+                    _LOGGER.debug(
+                        "Auto-detected network %s exceeds %s addresses; "
+                        "using %s instead",
+                        network_details,
+                        MAX_AUTO_SCAN_ADDRESSES,
+                        bounded_network,
+                    )
+                    network_details = bounded_network
 
                 start = str(network_details.network_address)
                 end = str(network_details.broadcast_address)
