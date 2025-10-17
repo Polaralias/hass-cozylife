@@ -240,10 +240,8 @@ class CozyLifeSwitchAsLight(LightEntity):
             manufacturer=MANUFACTURER,
             model=tcp_client._device_model_name,
             name=self._name,
+            suggested_area=self._suggested_area,
         )
-        self._device_info["name"] = self._name
-        if self._suggested_area:
-            self._device_info["suggested_area"] = self._suggested_area
         #self._refresh_state()
 
     @property
