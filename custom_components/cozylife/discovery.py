@@ -23,11 +23,14 @@ def _ip_range(start: str, end: str) -> list[str]:
     return [str(ip_address(ip)) for ip in range(start_int, end_int + 1)]
 
 
-def discover_devices(start_ip: str, end_ip: str, timeout: float = 0.3) -> dict[str, list[dict[str, object]]]:
+def discover_devices(
+    start_ip: str, end_ip: str, timeout: float = 0.3
+) -> dict[str, list[dict[str, object]]]:
     """Scan an IP range for CozyLife devices."""
 
     lights: list[dict[str, object]] = []
     switches: list[dict[str, object]] = []
+    unknown: list[dict[str, object]] = []
 
     for address in _ip_range(start_ip, end_ip):
         client = tcp_client(address, timeout=timeout)
@@ -55,10 +58,12 @@ def discover_devices(start_ip: str, end_ip: str, timeout: float = 0.3) -> dict[s
                 lights.append({**device_data, "type": "light"})
             elif client._device_type_code == SWITCH_TYPE_CODE:
                 switches.append({**device_data, "type": "switch"})
+            else:
+                unknown.append({**device_data, "type": "unknown"})
 
         except Exception as err:  # noqa: BLE001
             _LOGGER.debug("Error discovering CozyLife device at %s: %s", address, err)
         finally:
             client.disconnect()
 
-    return {"lights": lights, "switches": switches}
+    return {"lights": lights, "switches": switches, "unknown": unknown}

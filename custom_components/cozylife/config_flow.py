@@ -222,53 +222,58 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ranges_to_scan = effective_auto_ranges
 
             if not errors and ranges_to_scan:
-                discovered: dict[str, list[dict[str, Any]]] = {
-                    "lights": [],
-                    "switches": [],
-                }
                 seen_devices: set[str] = set()
+                discovered_devices: list[dict[str, Any]] = []
+                any_devices_found = False
 
                 for start_ip, end_ip in ranges_to_scan:
                     devices = await self.hass.async_add_executor_job(
                         discover_devices, start_ip, end_ip, timeout
                     )
 
-                    for device in devices["lights"]:
-                        if device["did"] in seen_devices:
-                            continue
-                        seen_devices.add(device["did"])
-                        discovered["lights"].append(device)
+                    for category, items in devices.items():
+                        if items:
+                            any_devices_found = True
 
-                    for device in devices["switches"]:
-                        if device["did"] in seen_devices:
-                            continue
-                        seen_devices.add(device["did"])
-                        discovered["switches"].append(device)
+                        for device in items:
+                            device_id = device.get("did")
+                            if not device_id or device_id in seen_devices:
+                                continue
 
-                if not discovered["lights"] and not discovered["switches"]:
+                            seen_devices.add(device_id)
+                            discovered_devices.append(device)
+
+                if not any_devices_found:
                     errors["base"] = "no_devices_found"
                 else:
-                    self._scan_settings = {
-                        "mode": "custom" if use_custom_range else "auto",
-                        "ranges": ranges_to_scan,
-                        "timeout": timeout,
+                    existing_ids = {
+                        entry.unique_id
+                        for entry in self._async_current_entries()
+                        if entry.unique_id
                     }
-                    unique_devices: dict[str, dict[str, Any]] = {
-                        item["did"]: item
-                        for item in [
-                            *discovered["lights"],
-                            *discovered["switches"],
-                        ]
-                    }
-                    self._discovered_devices = sorted(
-                        unique_devices.values(),
-                        key=lambda item: (
-                            item.get("type", ""),
-                            item.get("dmn") or "",
-                            item.get("ip") or "",
-                        ),
-                    )
-                    return await self.async_step_device()
+                    available_devices = [
+                        device
+                        for device in discovered_devices
+                        if device.get("did") not in existing_ids
+                    ]
+
+                    if not available_devices:
+                        errors["base"] = "already_configured"
+                    else:
+                        self._scan_settings = {
+                            "mode": "custom" if use_custom_range else "auto",
+                            "ranges": ranges_to_scan,
+                            "timeout": timeout,
+                        }
+                        self._discovered_devices = sorted(
+                            available_devices,
+                            key=lambda item: (
+                                item.get("type", ""),
+                                item.get("dmn") or "",
+                                item.get("ip") or "",
+                            ),
+                        )
+                        return await self.async_step_device()
 
         description_default_start = (
             suggested_start if suggested_start else effective_auto_ranges[0][0]
@@ -596,7 +601,7 @@ class CozyLifeOptionsFlow(config_entries.OptionsFlow):
                     discover_devices, start_ip, end_ip, timeout
                 )
 
-                if not devices["lights"] and not devices["switches"]:
+                if not any(devices.values()):
                     errors["base"] = "no_devices_found"
                 else:
                     data = {
