@@ -70,9 +70,15 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self._device_type_labels
 
         language = self.hass.config.language or "en"
-        translations = await async_get_translations(
-            self.hass, language, "component", {DOMAIN}
-        )
+        try:
+            translations = await async_get_translations(
+                self.hass, language, "component", {DOMAIN}
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug(
+                "Unable to load CozyLife translations for %s: %s", language, err
+            )
+            translations = {}
 
         prefix = f"component.{DOMAIN}.config.labels.device_type."
         labels = {
