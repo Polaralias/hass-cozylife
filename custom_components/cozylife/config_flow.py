@@ -23,13 +23,15 @@ from .const import (
     DEFAULT_LIGHT_POLL_INTERVAL,
     DEFAULT_SWITCH_POLL_INTERVAL,
     DOMAIN,
+    LIGHT_TYPE_CODE,
+    SWITCH_TYPE_CODE,
 )
 from .helpers import (
-    normalize_area_value,
     prepare_area_value_for_storage,
     resolve_area_id,
 )
 from .discovery import discover_devices
+from .tcp_client import tcp_client
 
 DEFAULT_START_IP = "192.168.0.0"
 DEFAULT_END_IP = "192.168.0.255"
@@ -60,9 +62,6 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._scan_settings: dict[str, Any] = {}
         self._auto_scan_ranges: list[tuple[str, str]] = []
         self._device_type_labels: dict[str, str] | None = None
-        self._pending_devices: list[dict[str, Any]] = []
-        self._device_wizard_index: int = 0
-        self._device_wizard_results: list[dict[str, Any]] = []
 
     async def _async_get_device_type_labels(self) -> dict[str, str]:
         """Return translated labels for device types."""
@@ -163,9 +162,7 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is None:
             self._discovered_devices = []
             self._available_devices = []
-            self._pending_devices = []
-            self._device_wizard_index = 0
-            self._device_wizard_results = []
+            self._scan_settings = {}
 
         detected_auto_ranges = await self._async_get_auto_scan_ranges()
         effective_auto_ranges = (
@@ -241,122 +238,13 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 ranges_to_scan = effective_auto_ranges
 
             if not errors and ranges_to_scan:
-                seen_devices: set[str] = set()
-                discovered_devices: list[dict[str, Any]] = []
-                any_devices_found = False
+                self._scan_settings = {
+                    "mode": "custom" if use_custom_range else "auto",
+                    "ranges": ranges_to_scan,
+                    "timeout": timeout,
+                }
 
-                for start_ip, end_ip in ranges_to_scan:
-                    devices = await self.hass.async_add_executor_job(
-                        discover_devices, start_ip, end_ip, timeout
-                    )
-
-                    for category, items in devices.items():
-                        if items:
-                            any_devices_found = True
-
-                        for device in items:
-                            device_id = device.get("did")
-                            if not device_id or device_id in seen_devices:
-                                continue
-
-                            seen_devices.add(device_id)
-                            discovered_devices.append(device)
-
-                if not any_devices_found:
-                    errors["base"] = "no_devices_found"
-                else:
-                    existing_entries: dict[str, config_entries.ConfigEntry] = {}
-
-                    for entry in self._async_current_entries():
-                        identifiers: set[str] = set()
-
-                        if entry.unique_id:
-                            identifiers.add(entry.unique_id)
-
-                        data = entry.data
-
-                        device_info = data.get("device")
-                        if isinstance(device_info, Mapping):
-                            device_id = device_info.get("did")
-                            if isinstance(device_id, str):
-                                identifiers.add(device_id)
-
-                        devices_value = data.get("devices")
-                        if isinstance(devices_value, list):
-                            for device_entry in devices_value:
-                                if not isinstance(device_entry, Mapping):
-                                    continue
-
-                                payload = device_entry.get("device")
-                                if isinstance(payload, Mapping):
-                                    device_id = payload.get("did")
-                                else:
-                                    device_id = device_entry.get("did")
-
-                                if isinstance(device_id, str):
-                                    identifiers.add(device_id)
-                        elif isinstance(devices_value, Mapping):
-                            for device_entry in devices_value.values():
-                                if isinstance(device_entry, list):
-                                    candidate_items = device_entry
-                                else:
-                                    candidate_items = [device_entry]
-
-                                for item in candidate_items:
-                                    if not isinstance(item, Mapping):
-                                        continue
-
-                                    device_id = item.get("did")
-                                    if isinstance(device_id, str):
-                                        identifiers.add(device_id)
-
-                        for identifier in identifiers:
-                            existing_entries.setdefault(identifier, entry)
-
-                    enriched_devices: list[dict[str, Any]] = []
-                    for device in discovered_devices:
-                        device_id = device.get("did")
-                        configured_entry = (
-                            existing_entries.get(device_id) if device_id else None
-                        )
-
-                        enriched_devices.append(
-                            {
-                                **device,
-                                "configured": configured_entry is not None,
-                                "configured_entry_title": (
-                                    configured_entry.title if configured_entry else None
-                                ),
-                            }
-                        )
-
-                    self._scan_settings = {
-                        "mode": "custom" if use_custom_range else "auto",
-                        "ranges": ranges_to_scan,
-                        "timeout": timeout,
-                    }
-
-                    self._discovered_devices = sorted(
-                        enriched_devices,
-                        key=lambda item: (
-                            item.get("configured", False),
-                            item.get("type", ""),
-                            item.get("dmn") or "",
-                            item.get("ip") or "",
-                        ),
-                    )
-
-                    self._available_devices = [
-                        device
-                        for device in self._discovered_devices
-                        if not device.get("configured")
-                    ]
-
-                    self._pending_devices = list(self._available_devices)
-                    self._device_wizard_index = 0
-                    self._device_wizard_results = []
-
-                    return await self.async_step_device()
+                return await self.async_step_select_many()
 
         description_default_start = (
             suggested_start if suggested_start else effective_auto_ranges[0][0]
@@ -421,189 +309,267 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         return vol.Schema(schema_fields)
 
-    async def async_step_device(
+    async def _async_get_ranges_to_scan(self) -> list[tuple[str, str]]:
+        """Return the IP ranges to scan based on stored settings."""
+
+        ranges = self._scan_settings.get("ranges")
+        if ranges:
+            return ranges
+
+        auto_ranges = await self._async_get_auto_scan_ranges()
+        if auto_ranges:
+            return auto_ranges
+
+        return [(DEFAULT_START_IP, DEFAULT_END_IP)]
+
+    async def _async_discover_and_filter(self) -> list[dict[str, Any]]:
+        """Discover devices and filter out those already configured."""
+
+        ranges = await self._async_get_ranges_to_scan()
+        timeout = self._scan_settings.get("timeout", 0.3)
+        found: list[dict[str, Any]] = []
+        seen_keys: set[str] = set()
+
+        for start_ip, end_ip in ranges:
+            result = await self.hass.async_add_executor_job(
+                discover_devices, start_ip, end_ip, timeout
+            )
+
+            for section in ("lights", "switches", "unknown"):
+                for device in result.get(section, []):
+                    item = dict(device)
+                    device_key = item.get("did") or f"{item.get('ip')}:{item.get('pid')}"
+                    if not device_key or device_key in seen_keys:
+                        continue
+
+                    seen_keys.add(device_key)
+                    item["device_key"] = device_key
+
+                    if "type" not in item:
+                        if section == "lights":
+                            item["type"] = "light"
+                        elif section == "switches":
+                            item["type"] = "switch"
+                        else:
+                            item["type"] = "unknown"
+
+                    found.append(item)
+
+        self._discovered_devices = sorted(
+            found,
+            key=lambda item: (
+                item.get("type", ""),
+                item.get("dmn") or "",
+                item.get("ip") or "",
+            ),
+        )
+
+        existing_ids: set[str] = set()
+        for entry in self._async_current_entries():
+            if entry.unique_id:
+                existing_ids.add(entry.unique_id)
+
+            data = entry.data
+
+            device_info = data.get("device")
+            if isinstance(device_info, Mapping):
+                device_id = device_info.get("did")
+                if isinstance(device_id, str):
+                    existing_ids.add(device_id)
+
+            devices_value = data.get("devices")
+            if isinstance(devices_value, list):
+                for device_entry in devices_value:
+                    if not isinstance(device_entry, Mapping):
+                        continue
+
+                    payload = device_entry.get("device")
+                    if isinstance(payload, Mapping):
+                        device_id = payload.get("did")
+                    else:
+                        device_id = device_entry.get("did")
+
+                    if isinstance(device_id, str):
+                        existing_ids.add(device_id)
+            elif isinstance(devices_value, Mapping):
+                for device_entry in devices_value.values():
+                    if isinstance(device_entry, list):
+                        candidate_items = device_entry
+                    else:
+                        candidate_items = [device_entry]
+
+                    for item in candidate_items:
+                        if not isinstance(item, Mapping):
+                            continue
+
+                        device_id = item.get("did")
+                        if isinstance(device_id, str):
+                            existing_ids.add(device_id)
+
+        self._available_devices = [
+            device
+            for device in self._discovered_devices
+            if device.get("did") and device["did"] not in existing_ids
+        ]
+
+        return self._available_devices
+
+    @callback
+    def _async_current_entries(self) -> list[config_entries.ConfigEntry]:
+        """Return currently configured entries for the integration."""
+
+        return self._async_current_entries_for_domain(DOMAIN)
+
+    async def async_step_select_many(
         self, user_input: Mapping[str, Any] | None = None
     ) -> FlowResult:
-        """Guide the user through configuring each discovered device."""
+        """Allow the user to select multiple devices to import."""
 
         errors: dict[str, str] = {}
+
+        if user_input is None or not self._available_devices:
+            await self._async_discover_and_filter()
 
         if not self._discovered_devices:
             return self.async_abort(reason="no_devices_found")
 
-        type_labels = await self._async_get_device_type_labels()
-
-        summary_lines: list[str] = []
-        for device in self._discovered_devices:
-            label_type = type_labels.get(
-                device.get("type"),
-                type_labels["unknown"],
-            )
-            model = device.get("dmn") or type_labels["unknown"]
-            label = f"{label_type}: {model} ({device['ip']})"
-
-            configured_title = device.get("configured_entry_title")
-            if device.get("configured"):
-                status = (
-                    f"Configured as \"{configured_title}\""
-                    if configured_title
-                    else "Configured"
-                )
-            else:
-                status = "Not configured"
-
-            summary_lines.append(f"• {label} — {status}")
-
-        summary_text = "\n".join(summary_lines)
-
         if not self._available_devices:
-            if user_input is not None:
-                return self.async_abort(reason="all_devices_configured")
+            return self.async_abort(reason="all_devices_configured")
 
-            return self.async_show_form(
-                step_id="device",
-                data_schema=vol.Schema({}),
-                errors={"base": "all_devices_configured"},
-                description_placeholders={
-                    "device_overview": summary_text,
-                },
-            )
+        type_labels = await self._async_get_device_type_labels()
+        options: list[dict[str, str]] = []
 
-        if not self._pending_devices:
-            self._pending_devices = list(self._available_devices)
-            self._device_wizard_index = 0
-            self._device_wizard_results = []
+        for item in self._available_devices:
+            key = item["device_key"]
+            device_type = item.get("type")
+            type_label = type_labels.get(device_type, type_labels["unknown"])
+            model = item.get("dmn") or item.get("did") or type_label
+            ip_address = item.get("ip")
+            if ip_address:
+                label = f"{type_label}: {model} ({ip_address})"
+            else:
+                label = f"{type_label}: {model}"
 
-        if self._device_wizard_index >= len(self._pending_devices):
-            return await self._async_finish_device_wizard()
-
-        current_device = self._pending_devices[self._device_wizard_index]
-
-        if user_input is not None:
-            name_input = (user_input.get(CONF_NAME) or "").strip()
-            area_input = prepare_area_value_for_storage(
-                self.hass, user_input.get(CONF_AREA)
-            )
-
-            device_payload = {
-                key: value
-                for key, value in current_device.items()
-                if key not in {"configured", "configured_entry_title"}
-            }
-
-            self._device_wizard_results.append(
-                {
-                    "device": device_payload,
-                    CONF_NAME: name_input or None,
-                    CONF_AREA: area_input or None,
-                }
-            )
-            self._device_wizard_index += 1
-
-            if self._device_wizard_index >= len(self._pending_devices):
-                return await self._async_finish_device_wizard()
-
-            return await self.async_step_device()
-
-        default_name = current_device.get("dmn") or current_device.get("did") or ""
+            options.append({"value": key, "label": label})
 
         schema = vol.Schema(
             {
-                vol.Optional(CONF_NAME, default=default_name): selector.TextSelector(),
-                vol.Optional(CONF_AREA): selector.AreaSelector(),
+                vol.Required("targets"): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=options,
+                        multiple=True,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                )
             }
         )
 
-        sanitized_input: dict[str, Any]
-        if user_input is None:
-            sanitized_input = {}
-        else:
-            sanitized_input = dict(user_input)
-            if sanitized_input.get(CONF_NAME) is None:
-                sanitized_input.pop(CONF_NAME, None)
-            if not sanitized_input.get(CONF_AREA):
-                sanitized_input.pop(CONF_AREA, None)
+        if user_input is not None:
+            targets = user_input.get("targets") or []
+            selected: list[dict[str, Any]] = []
+            available_by_key = {
+                device["device_key"]: device for device in self._available_devices
+            }
 
-        label_type = type_labels.get(
-            current_device.get("type"),
-            type_labels["unknown"],
-        )
-        model = current_device.get("dmn") or type_labels["unknown"]
-        current_label = f"{label_type}: {model} ({current_device['ip']})"
-        progress = f"{self._device_wizard_index + 1} / {len(self._pending_devices)}"
+            for key in targets:
+                device = available_by_key.get(key)
+                if device:
+                    selected.append(device)
+
+            if not selected:
+                errors["base"] = "device_missing"
+
+            if not errors:
+                timeout = float(self._scan_settings.get("timeout", 0.3))
+
+                for device in selected:
+                    payload = {
+                        key: value
+                        for key, value in device.items()
+                        if key != "device_key"
+                    }
+
+                    self.hass.async_create_task(
+                        self.hass.config_entries.flow.async_init(
+                            DOMAIN,
+                            context={"source": config_entries.SOURCE_IMPORT},
+                            data={
+                                "device": payload,
+                                "timeout": timeout,
+                            },
+                        )
+                    )
+
+                return self.async_abort(reason="created_multiple_entries")
 
         return self.async_show_form(
-            step_id="device",
+            step_id="select_many",
             data_schema=self.add_suggested_values_to_schema(
                 schema,
-                sanitized_input,
+                user_input or {},
             ),
             errors=errors,
-            description_placeholders={
-                "device_overview": summary_text,
-                "current_device": current_label,
-                "progress": progress,
-            },
         )
 
-    async def _async_finish_device_wizard(self) -> FlowResult:
-        """Create config entries for the collected device details."""
+    async def async_step_import(self, import_data: Mapping[str, Any]) -> FlowResult:
+        """Handle the import step for a single CozyLife device."""
 
-        if not self._device_wizard_results:
+        device = dict(import_data.get("device", {}))
+        timeout = float(import_data.get("timeout", 0.3))
+        did = device.get("did")
+        ip_address = device.get("ip")
+
+        if not did and ip_address:
+            def _refresh_device() -> dict[str, Any] | None:
+                client = tcp_client(ip_address, timeout=timeout)
+                try:
+                    client._initSocket()
+                    client._device_info()
+
+                    if not getattr(client, "_device_id", None):
+                        return None
+
+                    type_code = getattr(client, "_device_type_code", None)
+                    if type_code == LIGHT_TYPE_CODE:
+                        device_type = "light"
+                    elif type_code == SWITCH_TYPE_CODE:
+                        device_type = "switch"
+                    else:
+                        device_type = "unknown"
+
+                    return {
+                        "did": getattr(client, "_device_id", None),
+                        "pid": getattr(client, "_pid", None),
+                        "dpid": getattr(client, "_dpid", None),
+                        "dmn": getattr(client, "_device_model_name", None),
+                        "type": device_type,
+                    }
+                finally:
+                    client.disconnect()
+
+            refreshed = await self.hass.async_add_executor_job(_refresh_device)
+            if refreshed:
+                device.update(
+                    {key: value for key, value in refreshed.items() if value is not None}
+                )
+                did = device.get("did")
+
+        if not did:
             return self.async_abort(reason="no_devices_found")
 
-        timeout = self._scan_settings.get("timeout", 0.3)
+        await self.async_set_unique_id(did)
+        self._abort_if_unique_id_configured(
+            updates={"device": device, "timeout": timeout}
+        )
 
-        if len(self._device_wizard_results) == 1:
-            device_entry = self._device_wizard_results[0]
-            device_payload = dict(device_entry.get("device", {}))
-            name_value = device_entry.get(CONF_NAME)
-            area_value = device_entry.get(CONF_AREA)
+        device.setdefault("type", "unknown")
 
-            title = (
-                name_value
-                or device_payload.get("dmn")
-                or device_payload.get("did")
-                or "CozyLife device"
-            )
+        title = device.get("dmn") or did or "CozyLife"
 
-            data = {
-                "device": device_payload,
-                "timeout": timeout,
-            }
-
-            if name_value:
-                data[CONF_NAME] = name_value
-            if area_value:
-                data[CONF_AREA] = area_value
-
-            unique_id = device_payload.get("did")
-            if unique_id:
-                await self.async_set_unique_id(unique_id)
-                self._abort_if_unique_id_configured()
-
-            return self.async_create_entry(title=title, data=data)
-
-        devices_payload: list[dict[str, Any]] = []
-        for device_entry in self._device_wizard_results:
-            device_payload = dict(device_entry.get("device", {}))
-            item: dict[str, Any] = {"device": device_payload}
-            if device_entry.get(CONF_NAME):
-                item[CONF_NAME] = device_entry[CONF_NAME]
-            if device_entry.get(CONF_AREA):
-                item[CONF_AREA] = device_entry[CONF_AREA]
-            devices_payload.append(item)
-
-        title = f"{len(devices_payload)} CozyLife devices"
-        data: dict[str, Any] = {
-            "devices": devices_payload,
-            "timeout": timeout,
-        }
-
-        if self._scan_settings:
-            data["scan_settings"] = self._scan_settings
-
-        return self.async_create_entry(title=title, data=data)
+        return self.async_create_entry(
+            title=title,
+            data={"device": device, "timeout": timeout},
+        )
 
     @staticmethod
     @callback
