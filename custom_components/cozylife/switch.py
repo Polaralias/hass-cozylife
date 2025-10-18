@@ -63,6 +63,39 @@ async def async_setup_entry(
                     area_id=area_id,
                 )
             )
+    elif isinstance(data.get("devices"), list):
+        for item in data["devices"]:
+            device_info = item.get("device", {})
+            if not device_info or device_info.get("type") != "switch":
+                continue
+
+            client = tcp_client(device_info.get("ip"), timeout=timeout)
+            client._device_id = device_info.get("did")
+            client._pid = device_info.get("pid")
+            client._dpid = device_info.get("dpid")
+            client._device_model_name = device_info.get("dmn")
+
+            fallback_name = client._device_model_name or (
+                client.device_id[-4:] if client.device_id else "CozyLife"
+            )
+            friendly_name = (
+                item.get(CONF_NAME)
+                or device_info.get("dmn")
+                or device_info.get("did")
+                or fallback_name
+            )
+            raw_area = item.get(CONF_AREA) or device_info.get("location")
+            area_id = resolve_area_id(hass, raw_area) or normalize_area_value(raw_area)
+            client.name = friendly_name
+
+            switches.append(
+                CozyLifeSwitch(
+                    client,
+                    hass,
+                    name=friendly_name,
+                    area_id=area_id,
+                )
+            )
     else:
         devices = data.get("devices", {})
         for item in devices.get("switches", []):
