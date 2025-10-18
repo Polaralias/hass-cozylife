@@ -305,8 +305,8 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             description_placeholders=placeholders,
         )
 
-    @staticmethod
     def _build_user_schema(
+        self,
         show_manual_fields: bool,
         suggested_start: str,
         suggested_end: str,
