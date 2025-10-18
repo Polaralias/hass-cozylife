@@ -257,11 +257,53 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if not any_devices_found:
                     errors["base"] = "no_devices_found"
                 else:
-                    existing_entries = {
-                        entry.unique_id: entry
-                        for entry in self._async_current_entries()
-                        if entry.unique_id
-                    }
+                    existing_entries: dict[str, config_entries.ConfigEntry] = {}
+
+                    for entry in self._async_current_entries():
+                        identifiers: set[str] = set()
+
+                        if entry.unique_id:
+                            identifiers.add(entry.unique_id)
+
+                        data = entry.data
+
+                        device_info = data.get("device")
+                        if isinstance(device_info, Mapping):
+                            device_id = device_info.get("did")
+                            if isinstance(device_id, str):
+                                identifiers.add(device_id)
+
+                        devices_value = data.get("devices")
+                        if isinstance(devices_value, list):
+                            for device_entry in devices_value:
+                                if not isinstance(device_entry, Mapping):
+                                    continue
+
+                                payload = device_entry.get("device")
+                                if isinstance(payload, Mapping):
+                                    device_id = payload.get("did")
+                                else:
+                                    device_id = device_entry.get("did")
+
+                                if isinstance(device_id, str):
+                                    identifiers.add(device_id)
+                        elif isinstance(devices_value, Mapping):
+                            for device_entry in devices_value.values():
+                                if isinstance(device_entry, list):
+                                    candidate_items = device_entry
+                                else:
+                                    candidate_items = [device_entry]
+
+                                for item in candidate_items:
+                                    if not isinstance(item, Mapping):
+                                        continue
+
+                                    device_id = item.get("did")
+                                    if isinstance(device_id, str):
+                                        identifiers.add(device_id)
+
+                        for identifier in identifiers:
+                            existing_entries.setdefault(identifier, entry)
 
                     enriched_devices: list[dict[str, Any]] = []
                     for device in discovered_devices:
