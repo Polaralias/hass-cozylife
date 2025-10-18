@@ -44,13 +44,19 @@ from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import color as colorutil
 
-from .const import CONF_AREA, DOMAIN, MANUFACTURER
+from .const import (
+    CONF_AREA,
+    CONF_LIGHT_POLL_INTERVAL,
+    CONF_SWITCH_POLL_INTERVAL,
+    DEFAULT_LIGHT_POLL_INTERVAL,
+    DEFAULT_SWITCH_POLL_INTERVAL,
+    DOMAIN,
+    MANUFACTURER,
+)
 from .helpers import normalize_area_value, resolve_area_id
 from .tcp_client import tcp_client
 
 
-SCAN_INTERVAL = timedelta(seconds=60)
-SWITCH_SCAN_INTERVAL = timedelta(seconds=20)
 MIN_INTERVAL = 0.2
 
 CIRCADIAN_BRIGHTNESS = True
@@ -194,16 +200,24 @@ async def async_setup_entry(
     if not lights and not switches:
         return
 
-    async_add_entities(lights + switches)
+    poll_intervals = data.get("poll_intervals", {})
+    light_interval_seconds = poll_intervals.get(
+        CONF_LIGHT_POLL_INTERVAL, DEFAULT_LIGHT_POLL_INTERVAL
+    )
+    switch_interval_seconds = poll_intervals.get(
+        CONF_SWITCH_POLL_INTERVAL, DEFAULT_SWITCH_POLL_INTERVAL
+    )
 
-    for entity in [*lights, *switches]:
-        await hass.async_add_executor_job(entity._tcp_client._initSocket)
-        await asyncio.sleep(0.01)
+    light_scan_interval = timedelta(seconds=light_interval_seconds)
+    switch_scan_interval = timedelta(seconds=switch_interval_seconds)
+
+    async_add_entities(lights + switches, update_before_add=True)
 
     async def async_update_lights(now=None):
         for light in lights:
             if light._attr_is_on and light._effect == "natural":
                 await light.async_turn_on(effect="natural")
+                await hass.async_add_executor_job(light._refresh_state)
             else:
                 await hass.async_add_executor_job(light._refresh_state)
             await asyncio.sleep(0.1)
@@ -214,10 +228,10 @@ async def async_setup_entry(
             await asyncio.sleep(0.1)
 
     remove_light_update = async_track_time_interval(
-        hass, async_update_lights, SCAN_INTERVAL
+        hass, async_update_lights, light_scan_interval
     )
     remove_switch_update = async_track_time_interval(
-        hass, async_update_switches, SWITCH_SCAN_INTERVAL
+        hass, async_update_switches, switch_scan_interval
     )
 
     data.setdefault("light_runtime", {})
@@ -303,6 +317,7 @@ class CozyLifeSwitchAsLight(LightEntity):
             self._device_info["suggested_area"] = self._area_id
         self._attr_name = self._name
         self._attr_suggested_area = None
+        self._attr_available = False
         #self._refresh_state()
 
     @property
@@ -318,6 +333,7 @@ class CozyLifeSwitchAsLight(LightEntity):
             suggested_area = area.name if area else self._area_id
             self._device_info["suggested_area"] = suggested_area
             self._attr_suggested_area = suggested_area
+        await self.async_update()
 
     async def async_update(self):
         await self.hass.async_add_executor_job(self._refresh_state)
@@ -327,6 +343,9 @@ class CozyLifeSwitchAsLight(LightEntity):
         _LOGGER.info(f'_name={self._name},_state={self._state}')
         if self._state:
             self._attr_is_on = 0 < self._state['1']
+            self._attr_available = True
+        else:
+            self._attr_available = False
     
     @property
     def name(self) -> str:
@@ -339,10 +358,7 @@ class CozyLifeSwitchAsLight(LightEntity):
     @property
     def available(self) -> bool:
         """Return if the device is available."""
-        if self._tcp_client._connect:
-            return True
-        else:
-            return False
+        return bool(self._attr_available)
     
     @property
     def is_on(self) -> bool:
@@ -475,6 +491,7 @@ class CozyLifeLight(CozyLifeSwitchAsLight,RestoreEntity):
         _LOGGER.info(f'_name={self._name},_state={self._state}')
         if self._state:
             self._attr_is_on = 0 < self._state['1']
+            self._attr_available = True
 
             if '2' in self._state:
                 if self._state['2'] == 0:
@@ -498,6 +515,8 @@ class CozyLifeLight(CozyLifeSwitchAsLight,RestoreEntity):
                             ## May need to adjust
                             hs_color = colorutil.color_RGB_to_hs(r, g, b)
                             self._attr_hs_color = hs_color
+        else:
+            self._attr_available = False
 
     #autobrightness from circadian_lighting if enabled
     def calc_color_temp(self):

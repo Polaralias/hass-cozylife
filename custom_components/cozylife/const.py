@@ -2,6 +2,11 @@ DOMAIN = "cozylife"
 MANUFACTURER = "CozyLife"
 
 CONF_AREA = "area"
+CONF_LIGHT_POLL_INTERVAL = "light_poll_interval"
+CONF_SWITCH_POLL_INTERVAL = "switch_poll_interval"
+
+DEFAULT_LIGHT_POLL_INTERVAL = 60
+DEFAULT_SWITCH_POLL_INTERVAL = 20
 
 # http://doc.doit/project-5/doc-8/
 SWITCH_TYPE_CODE = '00'
