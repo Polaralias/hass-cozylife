@@ -240,6 +240,12 @@ class CozyLifeSwitchAsLight(LightEntity):
         self._unique_id = tcp_client.device_id
         self._name = name or tcp_client.device_id[-4:]
         self._area_id = area_id or None
+        suggested_area: str | None = None
+        if self._area_id:
+            area_registry = ar.async_get(self.hass)
+            area = area_registry.async_get_area(self._area_id)
+            suggested_area = area.name if area else self._area_id
+
         self._device_info = DeviceInfo(
             identifiers={(DOMAIN, tcp_client.device_id)},
             manufacturer=MANUFACTURER,
@@ -247,10 +253,10 @@ class CozyLifeSwitchAsLight(LightEntity):
             name=self._name,
         )
         self._device_info["name"] = self._name
-        if self._area_id:
-            self._device_info["suggested_area"] = self._area_id
+        if suggested_area:
+            self._device_info["suggested_area"] = suggested_area
         self._attr_name = self._name
-        self._attr_suggested_area = None
+        self._attr_suggested_area = suggested_area
         #self._refresh_state()
 
     @property
