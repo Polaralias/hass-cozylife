@@ -67,7 +67,7 @@
       "no_devices_found": "No CozyLife devices were discovered in this range.",
       "all_devices_configured": "All discovered CozyLife devices are already configured.",
       "invalid_timeout": "Enter a timeout between 0.05 and 10 seconds.",
-      "invalid_poll_interval": "Enter a polling interval between 5 and 600 seconds."
+      "invalid_poll_interval": "Enter a polling interval between 1 and 3600 seconds."
     }
   }
 }

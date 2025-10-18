@@ -81,15 +81,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         }
 
     options = dict(entry.options)
+
+    def _coerce_interval(value: object, default: float) -> float:
+        try:
+            interval = float(value)
+        except (TypeError, ValueError):
+            interval = float(default)
+        else:
+            if interval < 1:
+                interval = 1.0
+        return interval
+
+    light_interval = _coerce_interval(
+        options.get(CONF_LIGHT_POLL_INTERVAL, DEFAULT_LIGHT_POLL_INTERVAL),
+        DEFAULT_LIGHT_POLL_INTERVAL,
+    )
+    switch_interval = _coerce_interval(
+        options.get(CONF_SWITCH_POLL_INTERVAL, DEFAULT_SWITCH_POLL_INTERVAL),
+        DEFAULT_SWITCH_POLL_INTERVAL,
+    )
+
     entry_data["poll_intervals"] = {
-        CONF_LIGHT_POLL_INTERVAL: max(
-            1,
-            int(options.get(CONF_LIGHT_POLL_INTERVAL, DEFAULT_LIGHT_POLL_INTERVAL)),
-        ),
-        CONF_SWITCH_POLL_INTERVAL: max(
-            1,
-            int(options.get(CONF_SWITCH_POLL_INTERVAL, DEFAULT_SWITCH_POLL_INTERVAL)),
-        ),
+        "light": light_interval,
+        "switch": switch_interval,
     }
 
     hass.data[DOMAIN][entry.entry_id] = entry_data

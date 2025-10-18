@@ -46,8 +46,6 @@ from homeassistant.util import color as colorutil
 
 from .const import (
     CONF_AREA,
-    CONF_LIGHT_POLL_INTERVAL,
-    CONF_SWITCH_POLL_INTERVAL,
     DEFAULT_LIGHT_POLL_INTERVAL,
     DEFAULT_SWITCH_POLL_INTERVAL,
     DOMAIN,
@@ -202,10 +200,10 @@ async def async_setup_entry(
 
     poll_intervals = data.get("poll_intervals", {})
     light_interval_seconds = poll_intervals.get(
-        CONF_LIGHT_POLL_INTERVAL, DEFAULT_LIGHT_POLL_INTERVAL
+        "light", DEFAULT_LIGHT_POLL_INTERVAL
     )
     switch_interval_seconds = poll_intervals.get(
-        CONF_SWITCH_POLL_INTERVAL, DEFAULT_SWITCH_POLL_INTERVAL
+        "switch", DEFAULT_SWITCH_POLL_INTERVAL
     )
 
     light_scan_interval = timedelta(seconds=light_interval_seconds)

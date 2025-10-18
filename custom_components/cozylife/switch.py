@@ -18,7 +18,6 @@ from homeassistant.helpers.event import async_track_time_interval
 
 from .const import (
     CONF_AREA,
-    CONF_SWITCH_POLL_INTERVAL,
     DEFAULT_SWITCH_POLL_INTERVAL,
     DOMAIN,
     MANUFACTURER,
@@ -116,7 +115,7 @@ async def async_setup_entry(
 
     poll_intervals = data.get("poll_intervals", {})
     scan_interval_seconds = poll_intervals.get(
-        CONF_SWITCH_POLL_INTERVAL, DEFAULT_SWITCH_POLL_INTERVAL
+        "switch", DEFAULT_SWITCH_POLL_INTERVAL
     )
     scan_interval = timedelta(seconds=scan_interval_seconds)
 

@@ -14,7 +14,6 @@ from homeassistant.const import CONF_NAME
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import network, selector
-from homeassistant.helpers.translation import async_get_translations
 
 from .const import (
     CONF_AREA,
@@ -24,6 +23,7 @@ from .const import (
     DEFAULT_SWITCH_POLL_INTERVAL,
     DOMAIN,
     LIGHT_TYPE_CODE,
+    POLL_INTERVAL_VALIDATOR,
     SWITCH_TYPE_CODE,
 )
 from .helpers import (
@@ -49,7 +49,6 @@ def _coerce_ip(value: str) -> str:
 
 
 TIMEOUT_VALIDATOR = vol.All(vol.Coerce(float), vol.Range(min=0.05, max=10.0))
-POLL_INTERVAL_VALIDATOR = vol.All(vol.Coerce(float), vol.Range(min=5.0, max=600.0))
 
 class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle the CozyLife config flow."""
@@ -61,34 +60,6 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._available_devices: list[dict[str, Any]] = []
         self._scan_settings: dict[str, Any] = {}
         self._auto_scan_ranges: list[tuple[str, str]] = []
-        self._device_type_labels: dict[str, str] | None = None
-
-    async def _async_get_device_type_labels(self) -> dict[str, str]:
-        """Return translated labels for device types."""
-
-        if self._device_type_labels is not None:
-            return self._device_type_labels
-
-        language = self.hass.config.language or "en"
-        try:
-            translations = await async_get_translations(
-                self.hass, language, "component", {DOMAIN}
-            )
-        except Exception as err:  # noqa: BLE001
-            _LOGGER.debug(
-                "Unable to load CozyLife translations for %s: %s", language, err
-            )
-            translations = {}
-
-        prefix = f"component.{DOMAIN}.config.labels.device_type."
-        labels = {
-            "light": translations.get(f"{prefix}light", "Light"),
-            "switch": translations.get(f"{prefix}switch", "Switch"),
-            "unknown": translations.get(f"{prefix}unknown", "Device"),
-        }
-
-        self._device_type_labels = labels
-        return labels
 
     def _build_ip_selector(self) -> selector.TextSelector:
         """Return a text selector configured for IP input."""
@@ -332,9 +303,9 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         """Discover devices and filter out those already configured."""
 
         ranges = await self._async_get_ranges_to_scan()
-        timeout = self._scan_settings.get("timeout", 0.3)
-        found: list[dict[str, Any]] = []
-        seen_keys: set[str] = set()
+        timeout = float(self._scan_settings.get("timeout", 0.3))
+        discovered: list[dict[str, Any]] = []
+        seen_devices: set[str] = set()
 
         for start_ip, end_ip in ranges:
             try:
@@ -349,30 +320,39 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
                 continue
 
+            if not isinstance(result, Mapping):
+                continue
+
             for section in ("lights", "switches", "unknown"):
-                for device in result.get(section, []):
-                    item = dict(device)
-                    device_key = item.get("did") or f"{item.get('ip')}:{item.get('pid')}"
-                    if not device_key or device_key in seen_keys:
+                for raw_device in result.get(section, []) or []:
+                    if not isinstance(raw_device, Mapping):
                         continue
 
-                    seen_keys.add(device_key)
-                    item["device_key"] = device_key
+                    device = dict(raw_device)
+                    did = device.get("did")
+                    ip_address = device.get("ip")
 
-                    if "type" not in item:
+                    if not did or not ip_address:
+                        continue
+
+                    if did in seen_devices:
+                        continue
+
+                    seen_devices.add(did)
+
+                    if "type" not in device:
                         if section == "lights":
-                            item["type"] = "light"
+                            device["type"] = "light"
                         elif section == "switches":
-                            item["type"] = "switch"
+                            device["type"] = "switch"
                         else:
-                            item["type"] = "unknown"
+                            device["type"] = "unknown"
 
-                    found.append(item)
+                    discovered.append(device)
 
         self._discovered_devices = sorted(
-            found,
+            discovered,
             key=lambda item: (
-                item.get("type", ""),
                 item.get("dmn") or "",
                 item.get("ip") or "",
             ),
@@ -383,15 +363,13 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if entry.unique_id:
                 existing_ids.add(entry.unique_id)
 
-            data = entry.data
-
-            device_info = data.get("device")
+            device_info = entry.data.get("device")
             if isinstance(device_info, Mapping):
-                device_id = device_info.get("did")
-                if isinstance(device_id, str):
-                    existing_ids.add(device_id)
+                candidate_id = device_info.get("did")
+                if isinstance(candidate_id, str):
+                    existing_ids.add(candidate_id)
 
-            devices_value = data.get("devices")
+            devices_value = entry.data.get("devices")
             if isinstance(devices_value, list):
                 for device_entry in devices_value:
                     if not isinstance(device_entry, Mapping):
@@ -399,31 +377,29 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                     payload = device_entry.get("device")
                     if isinstance(payload, Mapping):
-                        device_id = payload.get("did")
+                        candidate_id = payload.get("did")
                     else:
-                        device_id = device_entry.get("did")
+                        candidate_id = device_entry.get("did")
 
-                    if isinstance(device_id, str):
-                        existing_ids.add(device_id)
+                    if isinstance(candidate_id, str):
+                        existing_ids.add(candidate_id)
             elif isinstance(devices_value, Mapping):
                 for device_entry in devices_value.values():
                     if isinstance(device_entry, list):
-                        candidate_items = device_entry
+                        candidates = device_entry
                     else:
-                        candidate_items = [device_entry]
+                        candidates = [device_entry]
 
-                    for item in candidate_items:
+                    for item in candidates:
                         if not isinstance(item, Mapping):
                             continue
 
-                        device_id = item.get("did")
-                        if isinstance(device_id, str):
-                            existing_ids.add(device_id)
+                        candidate_id = item.get("did")
+                        if isinstance(candidate_id, str):
+                            existing_ids.add(candidate_id)
 
         self._available_devices = [
-            device
-            for device in self._discovered_devices
-            if device.get("did") and device["did"] not in existing_ids
+            device for device in self._discovered_devices if device["did"] not in existing_ids
         ]
 
         return self._available_devices
@@ -450,21 +426,14 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if not self._available_devices:
             return self.async_abort(reason="all_devices_configured")
 
-        type_labels = await self._async_get_device_type_labels()
         options: list[dict[str, str]] = []
 
         for item in self._available_devices:
-            key = item["device_key"]
-            device_type = item.get("type")
-            type_label = type_labels.get(device_type, type_labels["unknown"])
-            model = item.get("dmn") or item.get("did") or type_label
-            ip_address = item.get("ip")
-            if ip_address:
-                label = f"{type_label}: {model} ({ip_address})"
-            else:
-                label = f"{type_label}: {model}"
-
-            options.append({"value": key, "label": label})
+            did = item["did"]
+            model = item.get("dmn") or did
+            ip_address = item.get("ip") or "unknown IP"
+            label = f"{model} ({ip_address})"
+            options.append({"value": did, "label": label})
 
         schema = vol.Schema(
             {
@@ -481,12 +450,10 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             targets = user_input.get("targets") or []
             selected: list[dict[str, Any]] = []
-            available_by_key = {
-                device["device_key"]: device for device in self._available_devices
-            }
+            available_by_id = {device["did"]: device for device in self._available_devices}
 
             for key in targets:
-                device = available_by_key.get(key)
+                device = available_by_id.get(key)
                 if device:
                     selected.append(device)
 
@@ -497,12 +464,7 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 timeout = float(self._scan_settings.get("timeout", 0.3))
 
                 for device in selected:
-                    payload = {
-                        key: value
-                        for key, value in device.items()
-                        if key != "device_key"
-                    }
-
+                    payload = dict(device)
                     self.hass.async_create_task(
                         self.hass.config_entries.flow.async_init(
                             DOMAIN,
@@ -640,12 +602,43 @@ class CozyLifeOptionsFlow(config_entries.OptionsFlow):
 
         return selector.NumberSelector(
             selector.NumberSelectorConfig(
-                min=5,
-                max=600,
-                step=5,
+                min=1,
+                max=3600,
+                step=1,
                 mode=selector.NumberSelectorMode.BOX,
             )
         )
+
+    def _update_runtime_poll_intervals(
+        self, light_interval: float, switch_interval: float
+    ) -> None:
+        """Update cached poll intervals and cancel existing timers."""
+
+        domain_data = self.hass.data.get(DOMAIN, {})
+        entry_data = domain_data.get(self.config_entry.entry_id)
+
+        if not isinstance(entry_data, dict):
+            return
+
+        poll_intervals = entry_data.setdefault("poll_intervals", {})
+        poll_intervals["light"] = float(light_interval)
+        poll_intervals["switch"] = float(switch_interval)
+
+        light_runtime = entry_data.get("light_runtime")
+        if isinstance(light_runtime, dict):
+            remove_lights = light_runtime.pop("remove_lights", None)
+            if callable(remove_lights):
+                remove_lights()
+
+            remove_switches = light_runtime.pop("remove_switches", None)
+            if callable(remove_switches):
+                remove_switches()
+
+        switch_runtime = entry_data.get("switch_runtime")
+        if isinstance(switch_runtime, dict):
+            remove_update = switch_runtime.pop("remove_update", None)
+            if callable(remove_update):
+                remove_update()
 
     async def async_step_init(
         self, user_input: Mapping[str, Any] | None = None
@@ -724,9 +717,13 @@ class CozyLifeOptionsFlow(config_entries.OptionsFlow):
 
                 options_data = {
                     **self.config_entry.options,
-                    CONF_LIGHT_POLL_INTERVAL: int(light_poll_value),
-                    CONF_SWITCH_POLL_INTERVAL: int(switch_poll_value),
+                    CONF_LIGHT_POLL_INTERVAL: float(light_poll_value),
+                    CONF_SWITCH_POLL_INTERVAL: float(switch_poll_value),
                 }
+
+                self._update_runtime_poll_intervals(
+                    float(light_poll_value), float(switch_poll_value)
+                )
 
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, data=updated_data
@@ -934,9 +931,13 @@ class CozyLifeOptionsFlow(config_entries.OptionsFlow):
 
                 options_data = {
                     **self.config_entry.options,
-                    CONF_LIGHT_POLL_INTERVAL: int(light_poll_value),
-                    CONF_SWITCH_POLL_INTERVAL: int(switch_poll_value),
+                    CONF_LIGHT_POLL_INTERVAL: float(light_poll_value),
+                    CONF_SWITCH_POLL_INTERVAL: float(switch_poll_value),
                 }
+
+                self._update_runtime_poll_intervals(
+                    float(light_poll_value), float(switch_poll_value)
+                )
 
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, data=new_data
@@ -1041,9 +1042,14 @@ class CozyLifeOptionsFlow(config_entries.OptionsFlow):
                     }
                     options_data = {
                         **self.config_entry.options,
-                        CONF_LIGHT_POLL_INTERVAL: int(light_poll_value),
-                        CONF_SWITCH_POLL_INTERVAL: int(switch_poll_value),
+                        CONF_LIGHT_POLL_INTERVAL: float(light_poll_value),
+                        CONF_SWITCH_POLL_INTERVAL: float(switch_poll_value),
                     }
+
+                    self._update_runtime_poll_intervals(
+                        float(light_poll_value), float(switch_poll_value)
+                    )
+
                     self.hass.config_entries.async_update_entry(
                         self.config_entry, data=data
                     )

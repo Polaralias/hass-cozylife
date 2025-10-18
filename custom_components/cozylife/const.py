@@ -1,3 +1,10 @@
+"""Constants for the CozyLife integration."""
+
+from __future__ import annotations
+
+import voluptuous as vol
+
+
 DOMAIN = "cozylife"
 MANUFACTURER = "CozyLife"
 
@@ -7,6 +14,11 @@ CONF_SWITCH_POLL_INTERVAL = "switch_poll_interval"
 
 DEFAULT_LIGHT_POLL_INTERVAL = 60
 DEFAULT_SWITCH_POLL_INTERVAL = 20
+
+POLL_INTERVAL_VALIDATOR = vol.All(
+    vol.Coerce(float),
+    vol.Range(min=1, max=3600),
+)
 
 # http://doc.doit/project-5/doc-8/
 SWITCH_TYPE_CODE = '00'
