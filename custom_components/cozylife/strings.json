@@ -3,7 +3,8 @@
     "abort": {
       "no_devices_found": "No CozyLife devices were discovered in this range.",
       "already_configured": "This CozyLife device is already configured.",
-      "all_devices_configured": "All discovered CozyLife devices are already configured."
+      "all_devices_configured": "All discovered CozyLife devices are already configured.",
+      "created_multiple_entries": "Creating entries for the selected devices."
     },
     "step": {
       "user": {
@@ -16,13 +17,11 @@
           "timeout": "Connection timeout (seconds)"
         }
       },
-      "device": {
-        "title": "Select device",
-        "description": "Review the discovered devices below. Devices already configured list their existing Home Assistant entry. Select an unconfigured device to add it.\n\n{device_overview}",
+      "select_many": {
+        "title": "Select CozyLife devices",
+        "description": "Choose the discovered CozyLife devices that you would like to add to Home Assistant. You can select more than one device before continuing.",
         "data": {
-          "device": "Device",
-          "name": "Device name",
-          "area": "Device area"
+          "targets": "Devices"
         }
       }
     },
