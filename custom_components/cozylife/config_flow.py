@@ -52,6 +52,9 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._scan_settings: dict[str, Any] = {}
         self._auto_scan_ranges: list[tuple[str, str]] = []
         self._device_type_labels: dict[str, str] | None = None
+        self._pending_devices: list[dict[str, Any]] = []
+        self._device_wizard_index: int = 0
+        self._device_wizard_results: list[dict[str, Any]] = []
 
     async def _async_get_device_type_labels(self) -> dict[str, str]:
         """Return translated labels for device types."""
@@ -152,6 +155,9 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if user_input is None:
             self._discovered_devices = []
             self._available_devices = []
+            self._pending_devices = []
+            self._device_wizard_index = 0
+            self._device_wizard_results = []
 
         detected_auto_ranges = await self._async_get_auto_scan_ranges()
         effective_auto_ranges = (
@@ -296,6 +302,10 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         if not device.get("configured")
                     ]
 
+                    self._pending_devices = list(self._available_devices)
+                    self._device_wizard_index = 0
+                    self._device_wizard_results = []
+
                     return await self.async_step_device()
 
         description_default_start = (
@@ -364,7 +374,7 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_device(
         self, user_input: Mapping[str, Any] | None = None
     ) -> FlowResult:
-        """Allow the user to select a discovered device and configure it."""
+        """Guide the user through configuring each discovered device."""
 
         errors: dict[str, str] = {}
 
@@ -374,11 +384,7 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         type_labels = await self._async_get_device_type_labels()
 
         summary_lines: list[str] = []
-        device_choices: dict[str, str] = {}
-        device_options: list[selector.SelectOptionDict] = []
-
         for device in self._discovered_devices:
-            device_id = device["did"]
             label_type = type_labels.get(
                 device.get("type"),
                 type_labels["unknown"],
@@ -398,12 +404,6 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
             summary_lines.append(f"• {label} — {status}")
 
-            if not device.get("configured"):
-                device_choices[device_id] = label
-                device_options.append(
-                    selector.SelectOptionDict(value=device_id, label=label)
-                )
-
         summary_text = "\n".join(summary_lines)
 
         if not self._available_devices:
@@ -419,75 +419,48 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 },
             )
 
-        if user_input is not None:
-            selected = user_input.get("device")
-            if selected not in device_choices:
-                errors["device"] = "device_missing"
-            else:
-                if any(
-                    entry.unique_id == selected for entry in self._async_current_entries()
-                ):
-                    errors["device"] = "already_configured"
-                else:
-                    device = next(
-                        item for item in self._discovered_devices if item["did"] == selected
-                    )
+        if not self._pending_devices:
+            self._pending_devices = list(self._available_devices)
+            self._device_wizard_index = 0
+            self._device_wizard_results = []
 
-                    device_payload = {
-                        key: value
-                        for key, value in device.items()
-                        if key not in {"configured", "configured_entry_title"}
-                    }
+        if self._device_wizard_index >= len(self._pending_devices):
+            return await self._async_finish_device_wizard()
 
-                    name_input = (user_input.get(CONF_NAME) or "").strip()
-                    area_input = prepare_area_value_for_storage(
-                        self.hass, user_input.get(CONF_AREA)
-                    )
-
-                    title = name_input or device.get("dmn") or device["did"]
-
-                    data = {
-                        "device": device_payload,
-                        "timeout": self._scan_settings["timeout"],
-                        CONF_NAME: name_input or None,
-                        CONF_AREA: area_input or None,
-                    }
-
-                    await self.async_set_unique_id(device["did"])
-                    self._abort_if_unique_id_configured()
-
-                    return self.async_create_entry(title=title, data=data)
+        current_device = self._pending_devices[self._device_wizard_index]
 
         if user_input is not None:
-            suggested_name = (user_input.get(CONF_NAME) or "")
-            suggested_area = normalize_area_value(user_input.get(CONF_AREA))
-        else:
-            suggested_name = ""
-            suggested_area = None
-
-        device_selector = selector.SelectSelector(
-            selector.SelectSelectorConfig(
-                options=device_options,
-                mode=selector.SelectSelectorMode.DROPDOWN,
+            name_input = (user_input.get(CONF_NAME) or "").strip()
+            area_input = prepare_area_value_for_storage(
+                self.hass, user_input.get(CONF_AREA)
             )
-        )
 
-        device_field = vol.Required("device")
-        if len(device_choices) == 1:
-            (device_id, _) = next(iter(device_choices.items()))
-            device_field = vol.Required("device", default=device_id)
+            device_payload = {
+                key: value
+                for key, value in current_device.items()
+                if key not in {"configured", "configured_entry_title"}
+            }
 
-        area_field: Any
-        if suggested_area is None:
-            area_field = vol.Optional(CONF_AREA)
-        else:
-            area_field = vol.Optional(CONF_AREA, default=suggested_area)
+            self._device_wizard_results.append(
+                {
+                    "device": device_payload,
+                    CONF_NAME: name_input or None,
+                    CONF_AREA: area_input or None,
+                }
+            )
+            self._device_wizard_index += 1
+
+            if self._device_wizard_index >= len(self._pending_devices):
+                return await self._async_finish_device_wizard()
+
+            return await self.async_step_device()
+
+        default_name = current_device.get("dmn") or current_device.get("did") or ""
 
         schema = vol.Schema(
             {
-                device_field: device_selector,
-                vol.Optional(CONF_NAME, default=suggested_name): selector.TextSelector(),
-                area_field: selector.AreaSelector(),
+                vol.Optional(CONF_NAME, default=default_name): selector.TextSelector(),
+                vol.Optional(CONF_AREA): selector.AreaSelector(),
             }
         )
 
@@ -501,6 +474,14 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not sanitized_input.get(CONF_AREA):
                 sanitized_input.pop(CONF_AREA, None)
 
+        label_type = type_labels.get(
+            current_device.get("type"),
+            type_labels["unknown"],
+        )
+        model = current_device.get("dmn") or type_labels["unknown"]
+        current_label = f"{label_type}: {model} ({current_device['ip']})"
+        progress = f"{self._device_wizard_index + 1} / {len(self._pending_devices)}"
+
         return self.async_show_form(
             step_id="device",
             data_schema=self.add_suggested_values_to_schema(
@@ -510,8 +491,69 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
             description_placeholders={
                 "device_overview": summary_text,
+                "current_device": current_label,
+                "progress": progress,
             },
         )
+
+    async def _async_finish_device_wizard(self) -> FlowResult:
+        """Create config entries for the collected device details."""
+
+        if not self._device_wizard_results:
+            return self.async_abort(reason="no_devices_found")
+
+        timeout = self._scan_settings.get("timeout", 0.3)
+
+        if len(self._device_wizard_results) == 1:
+            device_entry = self._device_wizard_results[0]
+            device_payload = dict(device_entry.get("device", {}))
+            name_value = device_entry.get(CONF_NAME)
+            area_value = device_entry.get(CONF_AREA)
+
+            title = (
+                name_value
+                or device_payload.get("dmn")
+                or device_payload.get("did")
+                or "CozyLife device"
+            )
+
+            data = {
+                "device": device_payload,
+                "timeout": timeout,
+            }
+
+            if name_value:
+                data[CONF_NAME] = name_value
+            if area_value:
+                data[CONF_AREA] = area_value
+
+            unique_id = device_payload.get("did")
+            if unique_id:
+                await self.async_set_unique_id(unique_id)
+                self._abort_if_unique_id_configured()
+
+            return self.async_create_entry(title=title, data=data)
+
+        devices_payload: list[dict[str, Any]] = []
+        for device_entry in self._device_wizard_results:
+            device_payload = dict(device_entry.get("device", {}))
+            item: dict[str, Any] = {"device": device_payload}
+            if device_entry.get(CONF_NAME):
+                item[CONF_NAME] = device_entry[CONF_NAME]
+            if device_entry.get(CONF_AREA):
+                item[CONF_AREA] = device_entry[CONF_AREA]
+            devices_payload.append(item)
+
+        title = f"{len(devices_payload)} CozyLife devices"
+        data: dict[str, Any] = {
+            "devices": devices_payload,
+            "timeout": timeout,
+        }
+
+        if self._scan_settings:
+            data["scan_settings"] = self._scan_settings
+
+        return self.async_create_entry(title=title, data=data)
 
     @staticmethod
     @callback
@@ -526,6 +568,30 @@ class CozyLifeOptionsFlow(config_entries.OptionsFlow):
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         self.config_entry = config_entry
+        self._multi_devices: list[dict[str, Any]] = []
+        self._multi_results: list[dict[str, Any]] = []
+        self._multi_index: int = 0
+        self._multi_timeout: float = 0.3
+        self._multi_initialized = False
+
+    def _build_ip_selector(self) -> selector.TextSelector:
+        """Return a text selector configured for IP input."""
+
+        return selector.TextSelector(
+            selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT)
+        )
+
+    def _build_timeout_selector(self) -> selector.NumberSelector:
+        """Return a number selector for timeouts."""
+
+        return selector.NumberSelector(
+            selector.NumberSelectorConfig(
+                min=0.05,
+                max=10.0,
+                step=0.05,
+                mode=selector.NumberSelectorMode.BOX,
+            )
+        )
 
     async def async_step_init(
         self, user_input: Mapping[str, Any] | None = None
@@ -535,6 +601,9 @@ class CozyLifeOptionsFlow(config_entries.OptionsFlow):
         errors: dict[str, str] = {}
 
         data = self.config_entry.data
+
+        if isinstance(data.get("devices"), list):
+            return await self._async_step_multi(user_input)
 
         if "device" not in data:
             return await self._async_step_legacy(user_input)
@@ -626,6 +695,153 @@ class CozyLifeOptionsFlow(config_entries.OptionsFlow):
             data_schema=self.add_suggested_values_to_schema(
                 options_schema, sanitized_input
             ),
+            errors=errors,
+        )
+
+    async def _async_step_multi(
+        self, user_input: Mapping[str, Any] | None
+    ) -> FlowResult:
+        """Handle options updates for multi-device entries."""
+
+        errors: dict[str, str] = {}
+
+        if not self._multi_initialized:
+            data = self.config_entry.data
+            self._multi_devices = [dict(device) for device in data.get("devices", [])]
+            self._multi_results = []
+            self._multi_index = 0
+            self._multi_timeout = data.get("timeout", 0.3)
+            self._multi_initialized = True
+
+        if not self._multi_devices:
+            return self.async_abort(reason="no_devices_found")
+
+        if self._multi_index < len(self._multi_devices):
+            device_entry = self._multi_devices[self._multi_index]
+            device_info = dict(device_entry.get("device", {}))
+            current_ip = device_info.get("ip", "")
+            suggested_name = (
+                device_entry.get(CONF_NAME)
+                or device_info.get("dmn")
+                or device_info.get("did")
+                or ""
+            )
+            raw_area = device_entry.get(CONF_AREA) or device_info.get("location")
+            suggested_area = resolve_area_id(self.hass, raw_area)
+
+            if user_input is not None:
+                ip_value = user_input.get("ip", current_ip)
+                name_value = (user_input.get(CONF_NAME) or "").strip()
+                area_input = prepare_area_value_for_storage(
+                    self.hass, user_input.get(CONF_AREA)
+                )
+
+                try:
+                    ip_value = _coerce_ip(ip_value)
+                except vol.Invalid:
+                    errors["ip"] = "invalid_ip"
+
+                if not errors:
+                    updated_device = {**device_info, "ip": ip_value}
+                    result_entry: dict[str, Any] = {"device": updated_device}
+                    if name_value:
+                        result_entry[CONF_NAME] = name_value
+                    if area_input:
+                        result_entry[CONF_AREA] = area_input
+                    self._multi_results.append(result_entry)
+                    self._multi_index += 1
+                    return await self._async_step_multi(None)
+
+            schema_fields: dict[Any, Any] = {
+                vol.Required("ip", default=current_ip): self._build_ip_selector(),
+                vol.Optional(CONF_NAME, default=suggested_name): selector.TextSelector(),
+            }
+
+            if suggested_area is None:
+                area_field = vol.Optional(CONF_AREA)
+            else:
+                area_field = vol.Optional(CONF_AREA, default=suggested_area)
+
+            schema_fields[area_field] = selector.AreaSelector()
+            schema = vol.Schema(schema_fields)
+
+            sanitized_input: dict[str, Any]
+            if user_input is None:
+                sanitized_input = {}
+            else:
+                sanitized_input = dict(user_input)
+                if sanitized_input.get(CONF_NAME) is None:
+                    sanitized_input.pop(CONF_NAME, None)
+                if not sanitized_input.get(CONF_AREA):
+                    sanitized_input.pop(CONF_AREA, None)
+
+            device_label = (
+                device_info.get("dmn")
+                or device_info.get("did")
+                or device_info.get("ip")
+                or "device"
+            )
+            progress = f"{self._multi_index + 1} / {len(self._multi_devices)}"
+
+            return self.async_show_form(
+                step_id="init",
+                data_schema=self.add_suggested_values_to_schema(
+                    schema, sanitized_input
+                ),
+                errors=errors,
+                description_placeholders={
+                    "progress": progress,
+                    "current_device": device_label,
+                },
+            )
+
+        if user_input is not None:
+            try:
+                timeout_value = float(user_input.get("timeout"))
+            except (TypeError, ValueError):
+                errors["timeout"] = "invalid_timeout"
+            else:
+                if not 0.05 <= timeout_value <= 10.0:
+                    errors["timeout"] = "invalid_timeout"
+
+            if not errors:
+                updated_devices: list[dict[str, Any]] = []
+
+                for result in self._multi_results:
+                    device_payload = dict(result.get("device", {}))
+                    entry_payload: dict[str, Any] = {"device": device_payload}
+                    if result.get(CONF_NAME):
+                        entry_payload[CONF_NAME] = result[CONF_NAME]
+                    if result.get(CONF_AREA):
+                        entry_payload[CONF_AREA] = result[CONF_AREA]
+                    updated_devices.append(entry_payload)
+
+                new_data = {
+                    **self.config_entry.data,
+                    "devices": updated_devices,
+                    "timeout": timeout_value,
+                }
+
+                self.hass.config_entries.async_update_entry(
+                    self.config_entry, data=new_data
+                )
+                await self.hass.config_entries.async_reload(
+                    self.config_entry.entry_id
+                )
+                return self.async_create_entry(title="", data={})
+
+        timeout_selector = self._build_timeout_selector()
+        schema = vol.Schema(
+            {
+                vol.Required("timeout", default=self._multi_timeout): timeout_selector
+            }
+        )
+
+        sanitized_input = {} if user_input is None else dict(user_input)
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=self.add_suggested_values_to_schema(schema, sanitized_input),
             errors=errors,
         )
 

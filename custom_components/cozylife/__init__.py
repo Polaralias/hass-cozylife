@@ -19,16 +19,39 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     entry_data: dict[str, object]
 
-    if "devices" in entry.data:
+    devices_value = entry.data.get("devices")
+
+    if isinstance(devices_value, dict):
         # Legacy configuration where a single entry represented a full scan.
         entry_data = {
-            "devices": entry.data["devices"],
+            "devices": devices_value,
             "timeout": entry.data.get("timeout", 0.3),
             "scan_settings": {
                 "start_ip": entry.data.get("start_ip"),
                 "end_ip": entry.data.get("end_ip"),
                 "timeout": entry.data.get("timeout", 0.3),
             },
+        }
+    elif isinstance(devices_value, list):
+        normalized_devices: list[dict[str, object]] = []
+
+        for device_entry in devices_value:
+            device_info = dict(device_entry.get("device", {}))
+            name_value = device_entry.get(CONF_NAME) or device_entry.get("name")
+            area_value = device_entry.get(CONF_AREA) or device_entry.get("location")
+
+            normalized_devices.append(
+                {
+                    "device": device_info,
+                    CONF_NAME: name_value,
+                    CONF_AREA: prepare_area_value_for_storage(hass, area_value),
+                }
+            )
+
+        entry_data = {
+            "devices": normalized_devices,
+            "timeout": entry.data.get("timeout", 0.3),
+            "scan_settings": entry.data.get("scan_settings"),
         }
     else:
         device_info = dict(entry.data.get("device", {}))

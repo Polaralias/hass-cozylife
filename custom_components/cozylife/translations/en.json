@@ -17,10 +17,9 @@
         }
       },
       "device": {
-        "title": "Select device",
-        "description": "Review the discovered devices below. Devices already configured list their existing Home Assistant entry. Select an unconfigured device to add it.\n\n{device_overview}",
+        "title": "Configure CozyLife devices",
+        "description": "Review the discovered devices below. Home Assistant will prompt you to supply details for each unconfigured device in turn ({progress} — {current_device}).\n\n{device_overview}",
         "data": {
-          "device": "Device",
           "name": "Device name",
           "area": "Device area"
         }
