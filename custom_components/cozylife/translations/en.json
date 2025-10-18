@@ -7,7 +7,7 @@
     "step": {
       "user": {
         "title": "Configure CozyLife",
-        "description": "Click Submit to scan your network via {protocol}. Home Assistant probes each detected local subnet ({auto}) with the default range {default_range}. Check the box to enter a custom IP span instead.",
+        "description": "Click Submit to scan your network with {protocol}. Home Assistant checks each detected subnet ({auto}) using the default range {default_range}. Enable the box to enter a custom IP span instead.",
         "data": {
           "use_custom_range": "Use custom IP range",
           "start_ip": "Start IP address",
