@@ -394,7 +394,7 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     return self.async_create_entry(title=title, data=data)
 
         if user_input is not None:
-            suggested_name = user_input.get(CONF_NAME, "")
+            suggested_name = (user_input.get(CONF_NAME) or "")
             suggested_area = normalize_area_value(user_input.get(CONF_AREA))
         else:
             suggested_name = ""
@@ -412,17 +412,36 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             (device_id, _) = next(iter(device_choices.items()))
             device_field = vol.Required("device", default=device_id)
 
+        area_field: Any
+        if suggested_area is None:
+            area_field = vol.Optional(CONF_AREA)
+        else:
+            area_field = vol.Optional(CONF_AREA, default=suggested_area)
+
         schema = vol.Schema(
             {
                 device_field: device_selector,
                 vol.Optional(CONF_NAME, default=suggested_name): selector.TextSelector(),
-                vol.Optional(CONF_AREA, default=suggested_area): selector.AreaSelector(),
+                area_field: selector.AreaSelector(),
             }
         )
 
+        sanitized_input: dict[str, Any]
+        if user_input is None:
+            sanitized_input = {}
+        else:
+            sanitized_input = dict(user_input)
+            if sanitized_input.get(CONF_NAME) is None:
+                sanitized_input.pop(CONF_NAME, None)
+            if not sanitized_input.get(CONF_AREA):
+                sanitized_input.pop(CONF_AREA, None)
+
         return self.async_show_form(
             step_id="device",
-            data_schema=schema,
+            data_schema=self.add_suggested_values_to_schema(
+                schema,
+                sanitized_input,
+            ),
             errors=errors,
         )
 
@@ -509,19 +528,35 @@ class CozyLifeOptionsFlow(config_entries.OptionsFlow):
         suggested_ip = device.get("ip", "")
         suggested_timeout = data.get("timeout", 0.3)
 
+        area_field: Any
+        if suggested_area is None:
+            area_field = vol.Optional(CONF_AREA)
+        else:
+            area_field = vol.Optional(CONF_AREA, default=suggested_area)
+
         options_schema = vol.Schema(
             {
                 vol.Required("ip", default=suggested_ip): self._build_ip_selector(),
                 vol.Required("timeout", default=suggested_timeout): self._build_timeout_selector(),
                 vol.Optional(CONF_NAME, default=suggested_name or ""): selector.TextSelector(),
-                vol.Optional(CONF_AREA, default=suggested_area): selector.AreaSelector(),
+                area_field: selector.AreaSelector(),
             }
         )
+
+        sanitized_input: dict[str, Any]
+        if user_input is None:
+            sanitized_input = {}
+        else:
+            sanitized_input = dict(user_input)
+            if sanitized_input.get(CONF_NAME) is None:
+                sanitized_input.pop(CONF_NAME, None)
+            if not sanitized_input.get(CONF_AREA):
+                sanitized_input.pop(CONF_AREA, None)
 
         return self.async_show_form(
             step_id="init",
             data_schema=self.add_suggested_values_to_schema(
-                options_schema, user_input or {}
+                options_schema, sanitized_input
             ),
             errors=errors,
         )
