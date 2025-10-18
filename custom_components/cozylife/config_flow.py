@@ -331,9 +331,17 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         seen_keys: set[str] = set()
 
         for start_ip, end_ip in ranges:
-            result = await self.hass.async_add_executor_job(
-                discover_devices, start_ip, end_ip, timeout
-            )
+            try:
+                result = await self.hass.async_add_executor_job(
+                    discover_devices, start_ip, end_ip, timeout
+                )
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception(
+                    "Error scanning CozyLife devices in range %s – %s",
+                    start_ip,
+                    end_ip,
+                )
+                continue
 
             for section in ("lights", "switches", "unknown"):
                 for device in result.get(section, []):
