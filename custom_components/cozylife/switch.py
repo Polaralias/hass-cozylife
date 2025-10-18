@@ -16,11 +16,15 @@ from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
 
-from .const import CONF_AREA, DOMAIN, MANUFACTURER
+from .const import (
+    CONF_AREA,
+    CONF_SWITCH_POLL_INTERVAL,
+    DEFAULT_SWITCH_POLL_INTERVAL,
+    DOMAIN,
+    MANUFACTURER,
+)
 from .helpers import normalize_area_value, resolve_area_id
 from .tcp_client import tcp_client
-
-SCAN_INTERVAL = timedelta(seconds=240)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -110,18 +114,20 @@ async def async_setup_entry(
     if not switches:
         return
 
-    async_add_entities(switches)
+    poll_intervals = data.get("poll_intervals", {})
+    scan_interval_seconds = poll_intervals.get(
+        CONF_SWITCH_POLL_INTERVAL, DEFAULT_SWITCH_POLL_INTERVAL
+    )
+    scan_interval = timedelta(seconds=scan_interval_seconds)
 
-    for switch in switches:
-        await hass.async_add_executor_job(switch._tcp_client._initSocket)
-        await asyncio.sleep(0.01)
+    async_add_entities(switches, update_before_add=True)
 
     async def async_update(now=None):
         for switch in switches:
             await hass.async_add_executor_job(switch._refresh_state)
             await asyncio.sleep(0.01)
 
-    remove_update = async_track_time_interval(hass, async_update, SCAN_INTERVAL)
+    remove_update = async_track_time_interval(hass, async_update, scan_interval)
 
     data.setdefault("switch_runtime", {})
     data["switch_runtime"].update(
@@ -174,7 +180,7 @@ class CozyLifeSwitch(SwitchEntity):
             self._device_info["suggested_area"] = self._area_id
         self._attr_name = self._name
         self._attr_suggested_area = None
-        self._refresh_state()
+        self._attr_available = False
 
     @property
     def unique_id(self) -> str | None:
@@ -189,6 +195,7 @@ class CozyLifeSwitch(SwitchEntity):
             suggested_area = area.name if area else self._area_id
             self._device_info["suggested_area"] = suggested_area
             self._attr_suggested_area = suggested_area
+        await self.async_update()
         
     async def async_update(self):
         await self.hass.async_add_executor_job(self._refresh_state)
@@ -198,6 +205,9 @@ class CozyLifeSwitch(SwitchEntity):
         _LOGGER.info(f'_name={self._name},_state={self._state}')
         if self._state:
             self._attr_is_on = 0 < self._state['1']
+            self._attr_available = True
+        else:
+            self._attr_available = False
     
     @property
     def name(self) -> str:
@@ -210,10 +220,7 @@ class CozyLifeSwitch(SwitchEntity):
     @property
     def available(self) -> bool:
         """Return if the device is available."""
-        if self._tcp_client._connect:
-            return True
-        else:
-            return False
+        return bool(self._attr_available)
     
     @property
     def is_on(self) -> bool:

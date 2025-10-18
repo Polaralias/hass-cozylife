@@ -6,7 +6,14 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_NAME, Platform
 from homeassistant.core import HomeAssistant
 
-from .const import CONF_AREA, DOMAIN
+from .const import (
+    CONF_AREA,
+    CONF_LIGHT_POLL_INTERVAL,
+    CONF_SWITCH_POLL_INTERVAL,
+    DEFAULT_LIGHT_POLL_INTERVAL,
+    DEFAULT_SWITCH_POLL_INTERVAL,
+    DOMAIN,
+)
 from .helpers import normalize_area_value, prepare_area_value_for_storage
 
 
@@ -72,6 +79,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             CONF_NAME: name_value,
             CONF_AREA: area,
         }
+
+    options = dict(entry.options)
+    entry_data["poll_intervals"] = {
+        CONF_LIGHT_POLL_INTERVAL: max(
+            1,
+            int(options.get(CONF_LIGHT_POLL_INTERVAL, DEFAULT_LIGHT_POLL_INTERVAL)),
+        ),
+        CONF_SWITCH_POLL_INTERVAL: max(
+            1,
+            int(options.get(CONF_SWITCH_POLL_INTERVAL, DEFAULT_SWITCH_POLL_INTERVAL)),
+        ),
+    }
 
     hass.data[DOMAIN][entry.entry_id] = entry_data
 

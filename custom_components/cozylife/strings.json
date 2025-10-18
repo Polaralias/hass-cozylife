@@ -55,6 +55,8 @@
           "end_ip": "End IP address",
           "ip": "Device IP address",
           "timeout": "Connection timeout (seconds)",
+          "light_poll_interval": "Light polling interval (seconds)",
+          "switch_poll_interval": "Switch polling interval (seconds)",
           "name": "Device name",
           "area": "Device area"
         }
@@ -65,7 +67,8 @@
       "range_order": "The end IP must be greater than or equal to the start IP.",
       "no_devices_found": "No CozyLife devices were discovered in this range.",
       "all_devices_configured": "All discovered CozyLife devices are already configured.",
-      "invalid_timeout": "Enter a timeout between 0.05 and 10 seconds."
+      "invalid_timeout": "Enter a timeout between 0.05 and 10 seconds.",
+      "invalid_poll_interval": "Enter a polling interval between 5 and 600 seconds."
     }
   }
 }

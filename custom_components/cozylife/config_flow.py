@@ -16,7 +16,14 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import network, selector
 from homeassistant.helpers.translation import async_get_translations
 
-from .const import CONF_AREA, DOMAIN
+from .const import (
+    CONF_AREA,
+    CONF_LIGHT_POLL_INTERVAL,
+    CONF_SWITCH_POLL_INTERVAL,
+    DEFAULT_LIGHT_POLL_INTERVAL,
+    DEFAULT_SWITCH_POLL_INTERVAL,
+    DOMAIN,
+)
 from .helpers import (
     normalize_area_value,
     prepare_area_value_for_storage,
@@ -40,6 +47,7 @@ def _coerce_ip(value: str) -> str:
 
 
 TIMEOUT_VALIDATOR = vol.All(vol.Coerce(float), vol.Range(min=0.05, max=10.0))
+POLL_INTERVAL_VALIDATOR = vol.All(vol.Coerce(float), vol.Range(min=5.0, max=600.0))
 
 class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle the CozyLife config flow."""
@@ -615,6 +623,18 @@ class CozyLifeOptionsFlow(config_entries.OptionsFlow):
         self._multi_index: int = 0
         self._multi_timeout: float = 0.3
         self._multi_initialized = False
+        self._light_poll_interval: float = float(
+            config_entry.options.get(
+                CONF_LIGHT_POLL_INTERVAL, DEFAULT_LIGHT_POLL_INTERVAL
+            )
+        )
+        self._switch_poll_interval: float = float(
+            config_entry.options.get(
+                CONF_SWITCH_POLL_INTERVAL, DEFAULT_SWITCH_POLL_INTERVAL
+            )
+        )
+        self._multi_light_poll_interval: float = self._light_poll_interval
+        self._multi_switch_poll_interval: float = self._switch_poll_interval
 
     def _build_ip_selector(self) -> selector.TextSelector:
         """Return a text selector configured for IP input."""
@@ -631,6 +651,18 @@ class CozyLifeOptionsFlow(config_entries.OptionsFlow):
                 min=0.05,
                 max=10.0,
                 step=0.05,
+                mode=selector.NumberSelectorMode.BOX,
+            )
+        )
+
+    def _build_poll_interval_selector(self) -> selector.NumberSelector:
+        """Return a number selector for polling intervals."""
+
+        return selector.NumberSelector(
+            selector.NumberSelectorConfig(
+                min=5,
+                max=600,
+                step=5,
                 mode=selector.NumberSelectorMode.BOX,
             )
         )
@@ -659,6 +691,12 @@ class CozyLifeOptionsFlow(config_entries.OptionsFlow):
             area_value = prepare_area_value_for_storage(
                 self.hass, user_input.get(CONF_AREA)
             )
+            light_poll_input = user_input.get(
+                CONF_LIGHT_POLL_INTERVAL, self._light_poll_interval
+            )
+            switch_poll_input = user_input.get(
+                CONF_SWITCH_POLL_INTERVAL, self._switch_poll_interval
+            )
 
             try:
                 ip_value = _coerce_ip(ip_value)
@@ -672,6 +710,22 @@ class CozyLifeOptionsFlow(config_entries.OptionsFlow):
             else:
                 if not 0.05 <= timeout_value <= 10.0:
                     errors["timeout"] = "invalid_timeout"
+
+            try:
+                light_poll_value = POLL_INTERVAL_VALIDATOR(light_poll_input)
+            except vol.Invalid:
+                errors[CONF_LIGHT_POLL_INTERVAL] = "invalid_poll_interval"
+                light_poll_value = None
+            else:
+                light_poll_value = float(light_poll_value)
+
+            try:
+                switch_poll_value = POLL_INTERVAL_VALIDATOR(switch_poll_input)
+            except vol.Invalid:
+                errors[CONF_SWITCH_POLL_INTERVAL] = "invalid_poll_interval"
+                switch_poll_value = None
+            else:
+                switch_poll_value = float(switch_poll_value)
 
             if not errors:
                 updated_device = {**device, "ip": ip_value}
@@ -688,13 +742,19 @@ class CozyLifeOptionsFlow(config_entries.OptionsFlow):
                 if "name" in updated_data and CONF_NAME in updated_data:
                     updated_data.pop("name", None)
 
+                options_data = {
+                    **self.config_entry.options,
+                    CONF_LIGHT_POLL_INTERVAL: int(light_poll_value),
+                    CONF_SWITCH_POLL_INTERVAL: int(switch_poll_value),
+                }
+
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, data=updated_data
                 )
                 await self.hass.config_entries.async_reload(
                     self.config_entry.entry_id
                 )
-                return self.async_create_entry(title="", data={})
+                return self.async_create_entry(title="", data=options_data)
 
         suggested_name = (
             data.get(CONF_NAME)
@@ -717,6 +777,12 @@ class CozyLifeOptionsFlow(config_entries.OptionsFlow):
             {
                 vol.Required("ip", default=suggested_ip): self._build_ip_selector(),
                 vol.Required("timeout", default=suggested_timeout): self._build_timeout_selector(),
+                vol.Required(
+                    CONF_LIGHT_POLL_INTERVAL, default=self._light_poll_interval
+                ): self._build_poll_interval_selector(),
+                vol.Required(
+                    CONF_SWITCH_POLL_INTERVAL, default=self._switch_poll_interval
+                ): self._build_poll_interval_selector(),
                 vol.Optional(CONF_NAME, default=suggested_name or ""): selector.TextSelector(),
                 area_field: selector.AreaSelector(),
             }
@@ -753,6 +819,8 @@ class CozyLifeOptionsFlow(config_entries.OptionsFlow):
             self._multi_results = []
             self._multi_index = 0
             self._multi_timeout = data.get("timeout", 0.3)
+            self._multi_light_poll_interval = self._light_poll_interval
+            self._multi_switch_poll_interval = self._switch_poll_interval
             self._multi_initialized = True
 
         if not self._multi_devices:
@@ -846,6 +914,26 @@ class CozyLifeOptionsFlow(config_entries.OptionsFlow):
                 if not 0.05 <= timeout_value <= 10.0:
                     errors["timeout"] = "invalid_timeout"
 
+            try:
+                light_poll_value = POLL_INTERVAL_VALIDATOR(
+                    user_input.get(
+                        CONF_LIGHT_POLL_INTERVAL, self._multi_light_poll_interval
+                    )
+                )
+            except vol.Invalid:
+                errors[CONF_LIGHT_POLL_INTERVAL] = "invalid_poll_interval"
+                light_poll_value = None
+
+            try:
+                switch_poll_value = POLL_INTERVAL_VALIDATOR(
+                    user_input.get(
+                        CONF_SWITCH_POLL_INTERVAL, self._multi_switch_poll_interval
+                    )
+                )
+            except vol.Invalid:
+                errors[CONF_SWITCH_POLL_INTERVAL] = "invalid_poll_interval"
+                switch_poll_value = None
+
             if not errors:
                 updated_devices: list[dict[str, Any]] = []
 
@@ -864,18 +952,32 @@ class CozyLifeOptionsFlow(config_entries.OptionsFlow):
                     "timeout": timeout_value,
                 }
 
+                options_data = {
+                    **self.config_entry.options,
+                    CONF_LIGHT_POLL_INTERVAL: int(light_poll_value),
+                    CONF_SWITCH_POLL_INTERVAL: int(switch_poll_value),
+                }
+
                 self.hass.config_entries.async_update_entry(
                     self.config_entry, data=new_data
                 )
                 await self.hass.config_entries.async_reload(
                     self.config_entry.entry_id
                 )
-                return self.async_create_entry(title="", data={})
+                return self.async_create_entry(title="", data=options_data)
 
         timeout_selector = self._build_timeout_selector()
+        poll_selector = self._build_poll_interval_selector()
         schema = vol.Schema(
             {
-                vol.Required("timeout", default=self._multi_timeout): timeout_selector
+                vol.Required("timeout", default=self._multi_timeout): timeout_selector,
+                vol.Required(
+                    CONF_LIGHT_POLL_INTERVAL, default=self._multi_light_poll_interval
+                ): poll_selector,
+                vol.Required(
+                    CONF_SWITCH_POLL_INTERVAL,
+                    default=self._multi_switch_poll_interval,
+                ): poll_selector,
             }
         )
 
@@ -895,6 +997,7 @@ class CozyLifeOptionsFlow(config_entries.OptionsFlow):
         errors: dict[str, str] = {}
         timeout_selector = self._build_timeout_selector()
         ip_selector = self._build_ip_selector()
+        poll_selector = self._build_poll_interval_selector()
 
         if user_input is not None:
             start_ip = user_input.get("start_ip", "")
@@ -915,9 +1018,34 @@ class CozyLifeOptionsFlow(config_entries.OptionsFlow):
             ):
                 errors["end_ip"] = "range_order"
 
-            if not errors:
-                timeout = float(user_input["timeout"])
+            timeout_value = user_input.get("timeout")
+            if timeout_value is None:
+                timeout_value = self.config_entry.data.get("timeout", 0.3)
 
+            if not errors:
+                timeout = float(timeout_value)
+
+                try:
+                    light_poll_value = POLL_INTERVAL_VALIDATOR(
+                        user_input.get(
+                            CONF_LIGHT_POLL_INTERVAL, self._light_poll_interval
+                        )
+                    )
+                except vol.Invalid:
+                    errors[CONF_LIGHT_POLL_INTERVAL] = "invalid_poll_interval"
+                    light_poll_value = None
+
+                try:
+                    switch_poll_value = POLL_INTERVAL_VALIDATOR(
+                        user_input.get(
+                            CONF_SWITCH_POLL_INTERVAL, self._switch_poll_interval
+                        )
+                    )
+                except vol.Invalid:
+                    errors[CONF_SWITCH_POLL_INTERVAL] = "invalid_poll_interval"
+                    switch_poll_value = None
+
+            if not errors:
                 devices = await self.hass.async_add_executor_job(
                     discover_devices, start_ip, end_ip, timeout
                 )
@@ -931,13 +1059,18 @@ class CozyLifeOptionsFlow(config_entries.OptionsFlow):
                         "timeout": timeout,
                         "devices": devices,
                     }
+                    options_data = {
+                        **self.config_entry.options,
+                        CONF_LIGHT_POLL_INTERVAL: int(light_poll_value),
+                        CONF_SWITCH_POLL_INTERVAL: int(switch_poll_value),
+                    }
                     self.hass.config_entries.async_update_entry(
                         self.config_entry, data=data
                     )
                     await self.hass.config_entries.async_reload(
                         self.config_entry.entry_id
                     )
-                    return self.async_create_entry(title="", data={})
+                    return self.async_create_entry(title="", data=options_data)
 
         current = self.config_entry.data
         suggested = {
@@ -950,7 +1083,13 @@ class CozyLifeOptionsFlow(config_entries.OptionsFlow):
             {
                 vol.Required("start_ip", default=suggested["start_ip"]): ip_selector,
                 vol.Required("end_ip", default=suggested["end_ip"]): ip_selector,
-                vol.Optional("timeout", default=suggested["timeout"]): timeout_selector,
+                vol.Required("timeout", default=suggested["timeout"]): timeout_selector,
+                vol.Required(
+                    CONF_LIGHT_POLL_INTERVAL, default=self._light_poll_interval
+                ): poll_selector,
+                vol.Required(
+                    CONF_SWITCH_POLL_INTERVAL, default=self._switch_poll_interval
+                ): poll_selector,
             }
         )
 
