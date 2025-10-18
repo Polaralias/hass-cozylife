@@ -48,6 +48,7 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     def __init__(self) -> None:
         self._discovered_devices: list[dict[str, Any]] = []
+        self._available_devices: list[dict[str, Any]] = []
         self._scan_settings: dict[str, Any] = {}
         self._auto_scan_ranges: list[tuple[str, str]] = []
         self._device_type_labels: dict[str, str] | None = None
@@ -148,6 +149,10 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         errors: dict[str, str] = {}
 
+        if user_input is None:
+            self._discovered_devices = []
+            self._available_devices = []
+
         detected_auto_ranges = await self._async_get_auto_scan_ranges()
         effective_auto_ranges = (
             detected_auto_ranges
@@ -246,34 +251,52 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if not any_devices_found:
                     errors["base"] = "no_devices_found"
                 else:
-                    existing_ids = {
-                        entry.unique_id
+                    existing_entries = {
+                        entry.unique_id: entry
                         for entry in self._async_current_entries()
                         if entry.unique_id
                     }
-                    available_devices = [
+
+                    enriched_devices: list[dict[str, Any]] = []
+                    for device in discovered_devices:
+                        device_id = device.get("did")
+                        configured_entry = (
+                            existing_entries.get(device_id) if device_id else None
+                        )
+
+                        enriched_devices.append(
+                            {
+                                **device,
+                                "configured": configured_entry is not None,
+                                "configured_entry_title": (
+                                    configured_entry.title if configured_entry else None
+                                ),
+                            }
+                        )
+
+                    self._scan_settings = {
+                        "mode": "custom" if use_custom_range else "auto",
+                        "ranges": ranges_to_scan,
+                        "timeout": timeout,
+                    }
+
+                    self._discovered_devices = sorted(
+                        enriched_devices,
+                        key=lambda item: (
+                            item.get("configured", False),
+                            item.get("type", ""),
+                            item.get("dmn") or "",
+                            item.get("ip") or "",
+                        ),
+                    )
+
+                    self._available_devices = [
                         device
-                        for device in discovered_devices
-                        if device.get("did") not in existing_ids
+                        for device in self._discovered_devices
+                        if not device.get("configured")
                     ]
 
-                    if not available_devices:
-                        errors["base"] = "already_configured"
-                    else:
-                        self._scan_settings = {
-                            "mode": "custom" if use_custom_range else "auto",
-                            "ranges": ranges_to_scan,
-                            "timeout": timeout,
-                        }
-                        self._discovered_devices = sorted(
-                            available_devices,
-                            key=lambda item: (
-                                item.get("type", ""),
-                                item.get("dmn") or "",
-                                item.get("ip") or "",
-                            ),
-                        )
-                        return await self.async_step_device()
+                    return await self.async_step_device()
 
         description_default_start = (
             suggested_start if suggested_start else effective_auto_ranges[0][0]
@@ -350,8 +373,10 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         type_labels = await self._async_get_device_type_labels()
 
+        summary_lines: list[str] = []
         device_choices: dict[str, str] = {}
         device_options: list[selector.SelectOptionDict] = []
+
         for device in self._discovered_devices:
             device_id = device["did"]
             label_type = type_labels.get(
@@ -360,9 +385,38 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
             model = device.get("dmn") or type_labels["unknown"]
             label = f"{label_type}: {model} ({device['ip']})"
-            device_choices[device_id] = label
-            device_options.append(
-                selector.SelectOptionDict(value=device_id, label=label)
+
+            configured_title = device.get("configured_entry_title")
+            if device.get("configured"):
+                status = (
+                    f"Configured as \"{configured_title}\""
+                    if configured_title
+                    else "Configured"
+                )
+            else:
+                status = "Not configured"
+
+            summary_lines.append(f"• {label} — {status}")
+
+            if not device.get("configured"):
+                device_choices[device_id] = label
+                device_options.append(
+                    selector.SelectOptionDict(value=device_id, label=label)
+                )
+
+        summary_text = "\n".join(summary_lines)
+
+        if not self._available_devices:
+            if user_input is not None:
+                return self.async_abort(reason="all_devices_configured")
+
+            return self.async_show_form(
+                step_id="device",
+                data_schema=vol.Schema({}),
+                errors={"base": "all_devices_configured"},
+                description_placeholders={
+                    "device_overview": summary_text,
+                },
             )
 
         if user_input is not None:
@@ -379,6 +433,12 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         item for item in self._discovered_devices if item["did"] == selected
                     )
 
+                    device_payload = {
+                        key: value
+                        for key, value in device.items()
+                        if key not in {"configured", "configured_entry_title"}
+                    }
+
                     name_input = (user_input.get(CONF_NAME) or "").strip()
                     area_input = prepare_area_value_for_storage(
                         self.hass, user_input.get(CONF_AREA)
@@ -387,7 +447,7 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     title = name_input or device.get("dmn") or device["did"]
 
                     data = {
-                        "device": device,
+                        "device": device_payload,
                         "timeout": self._scan_settings["timeout"],
                         CONF_NAME: name_input or None,
                         CONF_AREA: area_input or None,
@@ -448,6 +508,9 @@ class CozyLifeConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 sanitized_input,
             ),
             errors=errors,
+            description_placeholders={
+                "device_overview": summary_text,
+            },
         )
 
     @staticmethod

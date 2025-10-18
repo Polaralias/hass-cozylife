@@ -2,7 +2,8 @@
   "config": {
     "abort": {
       "no_devices_found": "No CozyLife devices were discovered in this range.",
-      "already_configured": "This CozyLife device is already configured."
+      "already_configured": "This CozyLife device is already configured.",
+      "all_devices_configured": "All discovered CozyLife devices are already configured."
     },
     "step": {
       "user": {
@@ -17,7 +18,7 @@
       },
       "device": {
         "title": "Select device",
-        "description": "Choose a discovered device and optionally provide a name and area for Home Assistant.",
+        "description": "Review the discovered devices below. Devices already configured list their existing Home Assistant entry. Select an unconfigured device to add it.\n\n{device_overview}",
         "data": {
           "device": "Device",
           "name": "Device name",
@@ -33,6 +34,7 @@
       "manual_range_required": "Enter a start and end IP address to run a manual scan.",
       "device_missing": "Select a device before continuing.",
       "already_configured": "This device is already configured.",
+      "all_devices_configured": "All discovered CozyLife devices are already configured.",
       "invalid_timeout": "Enter a timeout between 0.05 and 10 seconds."
     },
     "labels": {
